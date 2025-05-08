@@ -1,0 +1,75 @@
+00000001010010100100100000100000  # add $t1, $t2, $t3
+10001101010010010000000000000100  # lw $t1, 4($t2)
+00010001010010010000000000001010  # beq $t2, $t1, 10
+
+# MIPS Opcode Format Guide
+
+# 1. R-Type (Register-Type) Instruction Format (32 bits)
+# -------------------------------------------------------
+# | opcode (6 bits) | rs (5 bits) | rt (5 bits) | rd (5 bits) | shamt (5 bits) | funct (6 bits) |
+# ---------------------------------------------------------------------------------------------
+# Example: add $t1, $t2, $t3
+# Opcode: 000000 (R-type)
+# rs:     01010 ($t2)
+# rt:     01011 ($t3)
+# rd:     01001 ($t1)
+# shamt:  00000 (No shift)
+# funct:  100000 (add)
+#
+# Full Opcode: 000000 01010 01011 01001 00000 100000
+#
+# Common R-type Instructions:
+# - add, sub, and, or, slt
+
+# 2. I-Type (Immediate-Type) Instruction Format (32 bits)
+# --------------------------------------------------------
+# | opcode (6 bits) | rs (5 bits) | rt (5 bits) | immediate (16 bits) |
+# --------------------------------------------------------------------
+# Example: lw $t1, 4($t2)
+# Opcode: 100011 (lw)
+# rs:     01010 ($t2 - base register)
+# rt:     01001 ($t1 - destination register)
+# immediate: 0000000000000100 (4)
+#
+# Full Opcode: 100011 01010 01001 0000000000000100
+#
+# Common I-type Instructions:
+# - lw, sw, beq, bne
+
+# 3. J-Type (Jump-Type) Instruction Format (32 bits)
+# --------------------------------------------------
+# | opcode (6 bits) | address (26 bits) |
+# --------------------------------------
+# Example: j 1000
+# Opcode: 000010 (j)
+# address: 00000000000000000011111000 (1000)
+#
+# Full Opcode: 000010 00000000000000000011111000
+#
+# Common J-type Instructions:
+# - j, jal
+
+# Register Map (Binary to Register):
+# ----------------------------------
+# 00000 - $zero
+# 00001 - $at
+# 00010 - $v0
+# 00011 - $v1
+# 00100 - $a0
+# 00101 - $a1
+# 01000 - $t0
+# 01001 - $t1
+# 01010 - $t2
+# 01011 - $t3
+# 01100 - $t4
+# 01101 - $t5
+# 01110 - $t6
+# 01111 - $t7
+
+# Example Opcodes:
+# ----------------
+# 00000001010010100100100000100000  # add $t1, $t2, $t3
+# 10001101010010010000000000000100  # lw $t1, 4($t2)
+# 00010001010010010000000000001010  # beq $t2, $t1, 10
+# 00001000000000000000000000001000  # j 8
+

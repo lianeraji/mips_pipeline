@@ -16,4 +16,12 @@ sim: mips_pipeline
 clean:
 	rm -f *.o mips_pipeline pipeline_report.xlsx
 
+assembler:
+	python3 assembler.py
+
+push:
+	git add .
+	git commit -m "Update project"
+	git push origin main
+	
 .PHONY: all clean sim
