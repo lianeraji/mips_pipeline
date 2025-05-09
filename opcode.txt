@@ -15,9 +15,8 @@
 # rd:     01001 ($t1)
 # shamt:  00000 (No shift)
 # funct:  100000 (add)
-#
 # Full Opcode: 000000 01010 01011 01001 00000 100000
-#
+
 # Common R-type Instructions:
 # - add, sub, and, or, slt
 
@@ -30,9 +29,8 @@
 # rs:     01010 ($t2 - base register)
 # rt:     01001 ($t1 - destination register)
 # immediate: 0000000000000100 (4)
-#
 # Full Opcode: 100011 01010 01001 0000000000000100
-#
+
 # Common I-type Instructions:
 # - lw, sw, beq, bne
 
@@ -43,9 +41,8 @@
 # Example: j 1000
 # Opcode: 000010 (j)
 # address: 00000000000000000011111000 (1000)
-#
 # Full Opcode: 000010 00000000000000000011111000
-#
+
 # Common J-type Instructions:
 # - j, jal
 
