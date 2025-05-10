@@ -11,7 +11,6 @@
 
 using namespace std;
 
-
 #define CLR_RESET   "\033[0m"
 #define CLR_RED     "\033[31m"
 #define CLR_GREEN   "\033[32m"
@@ -32,7 +31,9 @@ struct Instruction {
     int decode_cycle = -1;    
     int execute_cycle = -1;  
     int mem_cycle = -1;      
-    int wb_cycle = -1;       
+    int wb_cycle = -1;   
+    bool is_bubble = false;
+    
 
     string dest_reg = "";
     vector<string> src_regs;
@@ -42,9 +43,9 @@ vector<Instruction> instructions;
 map<int, string> cycle_notes;  
 int total_cycles = 0;
 int executed_instructions = 0;
-bool ENABLE_FORWARDING = true;
-bool ENABLE_BRANCH_PREDICTION = true;
-bool ENABLE_REORDERING = true;
+bool ENABLE_FORWARDING = false;   // You can set this to false to check stall behavior
+bool ENABLE_BRANCH_PREDICTION = false; 
+bool ENABLE_REORDERING = false;  // You can set this to false to test reorder off case
 
 const int CYCLE_TIME_PS = 200;
 const int MAX_CYCLES = 1000;
@@ -56,59 +57,20 @@ string extract_register(const string& instr_text, size_t pos) {
     size_t reg_start = instr_text.find('$', pos);
     if (reg_start == string::npos) return "";
     
-    size_t reg_end = min({
+    size_t reg_end_candidates[] = {
         instr_text.find(',', reg_start),
         instr_text.find(')', reg_start),
         instr_text.find(' ', reg_start)
-    });
+    };
     
-    if (reg_end == string::npos) {
-        reg_end = instr_text.length();
+    size_t reg_end = instr_text.length();
+    for (auto val : reg_end_candidates) {
+        if (val != string::npos && val < reg_end) {
+            reg_end = val;
+        }
     }
     
     return instr_text.substr(reg_start, reg_end - reg_start);
-}
-
-void reorder_instructions() {
-    vector<Instruction> reordered;
-    vector<bool> used(instructions.size(), false);
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        if (used[i]) continue;
-
-        const auto& inst = instructions[i];
-
-
-        if (i + 1 < instructions.size()) {
-            for (size_t j = i + 1; j < instructions.size(); ++j) {
-                if (used[j]) continue;
-
-                bool independent = true;
-                for (const string& src : instructions[i].src_regs) {
-                    if (instructions[j].dest_reg == src) {
-                        independent = false;
-                        break;
-                    }
-                }
-                for (const string& src : instructions[j].src_regs) {
-                    if (inst.dest_reg == src) {
-                        independent = false;
-                        break;
-                    }
-                }
-
-                if (independent) {
-                    reordered.push_back(instructions[j]);
-                    used[j] = true;
-                }
-            }
-        }
-
-        reordered.push_back(inst);
-        used[i] = true;
-    }
-
-    instructions = reordered;
 }
 
 
@@ -163,6 +125,7 @@ void parse_instruction(Instruction& instr) {
         }
     }
     else if (instr.name == "j" || instr.name == "jal") {
+        // no registers
     }
     else {
         size_t pos = first_dollar;
@@ -201,6 +164,7 @@ void load_program(const string& filename) {
         
         size_t first_space = line.find_first_of(" \t");
         instr.name = (first_space != string::npos) ? line.substr(0, first_space) : line;
+        transform(instr.name.begin(), instr.name.end(), instr.name.begin(), ::tolower);
         
         if (instr.name == "beq" || instr.name == "bne" || 
             instr.name == "j" || instr.name == "jal") {
@@ -231,6 +195,15 @@ bool is_branch(const string& instr_name) {
            instr_name == "j" || instr_name == "jal";
 }
 
+
+
+
+
+
+bool evaluate_branch(const Instruction& instr) {
+    (void)instr;
+    return true; 
+}
 bool has_data_hazard(int producer_idx, int consumer_idx) {
     if (producer_idx < 0 || consumer_idx < 0 || 
         producer_idx >= (int)instructions.size() || 
@@ -241,30 +214,79 @@ bool has_data_hazard(int producer_idx, int consumer_idx) {
     const Instruction& producer = instructions[producer_idx];
     const Instruction& consumer = instructions[consumer_idx];
     
-    if (!producer.dest_reg.empty()) {
-        for (const auto& src_reg : consumer.src_regs) {
-            if (src_reg == producer.dest_reg) {
-                if (ENABLE_FORWARDING) {
-                    return is_load(producer.name) && 
-                          (consumer_idx == producer_idx + 1);
+    if (producer.dest_reg.empty())
+        return false;
+    
+    for (const auto& src_reg : consumer.src_regs) {
+        if (src_reg == producer.dest_reg) {
+            if (!ENABLE_FORWARDING) {
+                // Stall if consumer instruction is within 3 instructions after producer
+                if (consumer_idx <= producer_idx + 3) {
+                    return true;
                 }
-                return true;
+                return false;
+            }
+            // Forwarding enabled: stall only for load-use hazard with immediate successor
+            if (ENABLE_FORWARDING) {
+                if (is_load(producer.name) && consumer_idx == producer_idx + 1) {
+                    return true;
+                }
+                return false;
             }
         }
     }
     return false;
 }
 
-bool evaluate_branch(const Instruction& instr) {
-    (void)instr;
-    return true; 
+void reorder_instructions() {
+    vector<Instruction> reordered;
+    vector<bool> used(instructions.size(), false);
+
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (used[i]) continue;
+
+        const auto& inst = instructions[i];
+
+        // Find independent instructions later than i to reorder before i
+        for (size_t j = i + 1; j < instructions.size(); ++j) {
+            if (used[j]) continue;
+
+            bool independent = true;
+
+            // j writes to register used by i? Dependency
+            for (const string& src : inst.src_regs) {
+                if (instructions[j].dest_reg == src) {
+                    independent = false;
+                    break;
+                }
+            }
+            if (!independent) continue;
+
+            // i writes to register used by j? Dependency
+            for (const string& src : instructions[j].src_regs) {
+                if (inst.dest_reg == src) {
+                    independent = false;
+                    break;
+                }
+            }
+            if (!independent) continue;
+
+            reordered.push_back(instructions[j]);
+            used[j] = true;
+        }
+
+        reordered.push_back(inst);
+        used[i] = true;
+    }
+
+    instructions = reordered;
 }
 
-vvoid simulate_pipeline() {
+void simulate_pipeline() {
     if (ENABLE_REORDERING) {
         reorder_instructions();
     }
-    
+
     vector<int> IF(MAX_CYCLES, -1);
     vector<int> ID(MAX_CYCLES, -1);
     vector<int> EX(MAX_CYCLES, -1);
@@ -280,15 +302,13 @@ vvoid simulate_pipeline() {
     bool done = false;
 
     while (!done && total_cycles < MAX_CYCLES) {
-
-        // Writeback Stage
+        // Writeback stage completes at previous cycle WB[cycle-1]
         if (total_cycles > 0 && WB[total_cycles - 1] != -1) {
             Instruction &instr = instructions[WB[total_cycles - 1]];
             instr.wb_cycle = total_cycles - 1;
             instr.executed = true;
             executed_instructions++;
-            
-            // Clear register writer entry after writeback
+            // Remove register writers that are done writing back
             for (auto it = register_writer.begin(); it != register_writer.end();) {
                 if (it->second == WB[total_cycles - 1]) {
                     it = register_writer.erase(it);
@@ -298,7 +318,7 @@ vvoid simulate_pipeline() {
             }
         }
 
-        // Pipeline Shifting
+        // Advance pipeline registers
         if (total_cycles > 0) {
             WB[total_cycles] = MEM[total_cycles - 1];
             MEM[total_cycles] = EX[total_cycles - 1];
@@ -309,34 +329,30 @@ vvoid simulate_pipeline() {
         bool stall = false;
         bool branch_misprediction = false;
 
-        // Stall Logic - When both Forwarding and Reordering are OFF
         if (ID[total_cycles] != -1) {
             int ex_idx = EX[total_cycles];
             int mem_idx = MEM[total_cycles];
             int id_idx = ID[total_cycles];
 
+            // Check for hazards with EX and MEM stage instructions
             if (has_data_hazard(ex_idx, id_idx) || has_data_hazard(mem_idx, id_idx)) {
-                if (!ENABLE_FORWARDING && !ENABLE_REORDERING) {
-                    stall = true;
-                    int stall_cycles = 2;  // Stall for 2 cycles
-                    cycle_notes[total_cycles] = "STALL (Data Hazard, FWD & REORD OFF)";
-                    
-                    // Insert NOPs for stall duration
-                    for (int s = 0; s < stall_cycles; ++s) {
-                        IF[total_cycles + s] = -1;
-                        ID[total_cycles + s] = -1;
-                    }
-                    
-                    total_cycles += stall_cycles;  // Adjust cycle count for stalls
-                } else {
-                    stall = true;
-                    cycle_notes[total_cycles] = "STALL (Data Hazard)";
-                    IF[total_cycles] = -1;
-                }
+                stall = true;
+                cycle_notes[total_cycles] = "STALL (Data Hazard)";
+                
+                // Insert a bubble (NOP) into EX stage
+                EX[total_cycles] = -1; // <- means bubble
+                MEM[total_cycles] = EX[total_cycles - 1];
+                WB[total_cycles] = MEM[total_cycles - 1];
+            
+                // Hold ID and IF
+                ID[total_cycles] = ID[total_cycles - 1];
+                IF[total_cycles] = -1;
+            
+                continue; // Skip rest of this cycle
             }
+            
         }
 
-        // Branch Misprediction Handling
         if (EX[total_cycles] != -1 && is_branch(instructions[EX[total_cycles]].name)) {
             bool actual_taken = evaluate_branch(instructions[EX[total_cycles]]);
             branch_misprediction = (actual_taken != instructions[EX[total_cycles]].taken);
@@ -349,14 +365,12 @@ vvoid simulate_pipeline() {
             }
         }
 
-        // Fetch Stage
         if (!stall && !branch_misprediction && next_fetch_idx < (int)instructions.size()) {
             IF[total_cycles] = next_fetch_idx;
             instructions[next_fetch_idx].fetch_cycle = total_cycles;
             next_fetch_idx++;
         }
 
-        // Update Cycle Information for other stages
         if (ID[total_cycles] != -1)
             instructions[ID[total_cycles]].decode_cycle = total_cycles;
         if (EX[total_cycles] != -1) {
@@ -369,15 +383,13 @@ vvoid simulate_pipeline() {
             instructions[MEM[total_cycles]].mem_cycle = total_cycles;
         }
 
-        // Check for completion
-        if (executed_instructions == (int)instructions.size()) {
+        if (static_cast<size_t>(executed_instructions) == instructions.size()) {
             done = true;
         }
 
         total_cycles++;
     }
 }
-
 
 
 void display_pipeline_chart() {
@@ -540,10 +552,8 @@ void export_to_excel() {
     workbook_close(workbook);
 }
 
-
 int main() {
-    cout<<endl<<endl;
-    cout << CLR_BOLD << "MIPS 5-Stage Pipeline Simulator" << CLR_RESET << "\n";
+    cout << "\n\n" << CLR_BOLD << "MIPS 5-Stage Pipeline Simulator" << CLR_RESET << "\n";
     cout << "Branch Prediction: " << (ENABLE_BRANCH_PREDICTION ? "ON" : "OFF") << "\n";
     cout << "Forwarding: " << (ENABLE_FORWARDING ? "ON" : "OFF") << "\n";
     cout << "Reordering: " << (ENABLE_REORDERING ? "ON" : "OFF") << "\n\n";
@@ -554,9 +564,9 @@ int main() {
         display_pipeline_chart();
         export_to_excel();
         cout << CLR_GREEN << "\nSimulation completed successfully!" << CLR_RESET << endl;
-        cout << "Excel report saved to pipeline_report.xlsx" << endl<<endl<<endl;
+        cout << "Excel report saved to pipeline_report.xlsx" << endl << endl << endl;
         return 0;
-        
+
     } 
     catch (const exception& e) {
         cerr << CLR_RED << "Error: " << e.what() << CLR_RESET << endl;
