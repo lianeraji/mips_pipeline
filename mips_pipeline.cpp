@@ -304,18 +304,34 @@ void simulate_pipeline() {
 
         bool stall = false;
         bool branch_misprediction = false;
-
-       
+        
         if (ID[total_cycles] != -1) {
             int ex_idx = EX[total_cycles];
             int mem_idx = MEM[total_cycles];
             int id_idx = ID[total_cycles];
+            
+            // Check for data hazard
             if (has_data_hazard(ex_idx, id_idx) || has_data_hazard(mem_idx, id_idx)) {
-                stall = true;
-                cycle_notes[total_cycles] = "STALL (Data Hazard)";
-                IF[total_cycles] = -1;
+                if (!ENABLE_FORWARDING && !ENABLE_REORDERING) {
+                    // Stall for 2 cycles if both forwarding and reordering are disabled
+                    stall = true;
+                    int stall_cycles = 2;
+                    cycle_notes[total_cycles] = "STALL (Data Hazard, Forwarding and Reordering OFF)";
+        
+                    // Insert NOPs in pipeline stages for stall duration
+                    for (int s = 0; s < stall_cycles; ++s) {
+                        IF[total_cycles + s] = -1;
+                        ID[total_cycles + s] = -1;
+                    }
+                    total_cycles += stall_cycles;  // Increment cycles to account for stalls
+                } else {
+                    stall = true;
+                    cycle_notes[total_cycles] = "STALL (Data Hazard)";
+                    IF[total_cycles] = -1;
+                }
             }
         }
+        
 
 
         if (EX[total_cycles] != -1 && is_branch(instructions[EX[total_cycles]].name)) {

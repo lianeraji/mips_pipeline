@@ -1,7 +1,4 @@
-lw $t1, 0($t0)
-lw $t2, 4($t0)
-add $t3, $t1,$t2
-lw $t4, 8($t0)
-sw $t3, 12($t0)
-add $t5, $t1,$t4
-sw $t5, 16($t0)
+add r1, r2, r3
+sub r4, r1, r5
+and r6, r1, r8
+xor r9, r4, r11
