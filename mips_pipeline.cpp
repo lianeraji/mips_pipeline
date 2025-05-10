@@ -260,10 +260,11 @@ bool evaluate_branch(const Instruction& instr) {
     return true; 
 }
 
-void simulate_pipeline() {
+vvoid simulate_pipeline() {
     if (ENABLE_REORDERING) {
         reorder_instructions();
     }
+    
     vector<int> IF(MAX_CYCLES, -1);
     vector<int> ID(MAX_CYCLES, -1);
     vector<int> EX(MAX_CYCLES, -1);
@@ -279,12 +280,15 @@ void simulate_pipeline() {
     bool done = false;
 
     while (!done && total_cycles < MAX_CYCLES) {
-     
+
+        // Writeback Stage
         if (total_cycles > 0 && WB[total_cycles - 1] != -1) {
             Instruction &instr = instructions[WB[total_cycles - 1]];
             instr.wb_cycle = total_cycles - 1;
             instr.executed = true;
             executed_instructions++;
+            
+            // Clear register writer entry after writeback
             for (auto it = register_writer.begin(); it != register_writer.end();) {
                 if (it->second == WB[total_cycles - 1]) {
                     it = register_writer.erase(it);
@@ -294,7 +298,7 @@ void simulate_pipeline() {
             }
         }
 
-
+        // Pipeline Shifting
         if (total_cycles > 0) {
             WB[total_cycles] = MEM[total_cycles - 1];
             MEM[total_cycles] = EX[total_cycles - 1];
@@ -304,26 +308,26 @@ void simulate_pipeline() {
 
         bool stall = false;
         bool branch_misprediction = false;
-        
+
+        // Stall Logic - When both Forwarding and Reordering are OFF
         if (ID[total_cycles] != -1) {
             int ex_idx = EX[total_cycles];
             int mem_idx = MEM[total_cycles];
             int id_idx = ID[total_cycles];
-            
-            // Check for data hazard
+
             if (has_data_hazard(ex_idx, id_idx) || has_data_hazard(mem_idx, id_idx)) {
                 if (!ENABLE_FORWARDING && !ENABLE_REORDERING) {
-                    // Stall for 2 cycles if both forwarding and reordering are disabled
                     stall = true;
-                    int stall_cycles = 2;
-                    cycle_notes[total_cycles] = "STALL (Data Hazard, Forwarding and Reordering OFF)";
-        
-                    // Insert NOPs in pipeline stages for stall duration
+                    int stall_cycles = 2;  // Stall for 2 cycles
+                    cycle_notes[total_cycles] = "STALL (Data Hazard, FWD & REORD OFF)";
+                    
+                    // Insert NOPs for stall duration
                     for (int s = 0; s < stall_cycles; ++s) {
                         IF[total_cycles + s] = -1;
                         ID[total_cycles + s] = -1;
                     }
-                    total_cycles += stall_cycles;  // Increment cycles to account for stalls
+                    
+                    total_cycles += stall_cycles;  // Adjust cycle count for stalls
                 } else {
                     stall = true;
                     cycle_notes[total_cycles] = "STALL (Data Hazard)";
@@ -331,9 +335,8 @@ void simulate_pipeline() {
                 }
             }
         }
-        
 
-
+        // Branch Misprediction Handling
         if (EX[total_cycles] != -1 && is_branch(instructions[EX[total_cycles]].name)) {
             bool actual_taken = evaluate_branch(instructions[EX[total_cycles]]);
             branch_misprediction = (actual_taken != instructions[EX[total_cycles]].taken);
@@ -346,14 +349,14 @@ void simulate_pipeline() {
             }
         }
 
-    
+        // Fetch Stage
         if (!stall && !branch_misprediction && next_fetch_idx < (int)instructions.size()) {
             IF[total_cycles] = next_fetch_idx;
             instructions[next_fetch_idx].fetch_cycle = total_cycles;
             next_fetch_idx++;
         }
 
-
+        // Update Cycle Information for other stages
         if (ID[total_cycles] != -1)
             instructions[ID[total_cycles]].decode_cycle = total_cycles;
         if (EX[total_cycles] != -1) {
@@ -365,17 +368,16 @@ void simulate_pipeline() {
         if (MEM[total_cycles] != -1) {
             instructions[MEM[total_cycles]].mem_cycle = total_cycles;
         }
-        
-        if (static_cast<size_t>(executed_instructions) == instructions.size()) {
+
+        // Check for completion
+        if (executed_instructions == (int)instructions.size()) {
             done = true;
         }
-        
-        
-            
 
         total_cycles++;
     }
 }
+
 
 
 void display_pipeline_chart() {
