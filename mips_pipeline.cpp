@@ -1,576 +1,236 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <iomanip>
-#include <sstream>
-#include <map>
 #include <string>
-#include <cstdint>
-#include <xlsxwriter.h>
+#include <sstream>
 #include <algorithm>
-
+#include <iomanip>
 using namespace std;
 
-#define CLR_RESET   "\033[0m"
-#define CLR_RED     "\033[31m"
-#define CLR_GREEN   "\033[32m"
-#define CLR_YELLOW  "\033[33m"
-#define CLR_BLUE    "\033[34m"
-#define CLR_MAGENTA "\033[35m"
-#define CLR_CYAN    "\033[36m"
-#define CLR_BOLD    "\033[1m"
+#define RESET     "\033[0m"
+#define IF_COLOR  "\033[38;5;189m"
+#define RR_COLOR  "\033[38;5;189m"
+#define EX_COLOR  "\033[38;5;183m"
+#define INST_COLOR  "\033[38;5;183m"
+#define MA_COLOR  "\033[38;5;151m"
+#define WR_COLOR  "\033[38;5;186m"
+#define ST_COLOR  "\033[38;5;203m"
+
+vector<string> STAGES = {"IF", "RR", "EX", "MA", "WR"};
+vector<string> STAGE_COLORS = {IF_COLOR, RR_COLOR, EX_COLOR, MA_COLOR, WR_COLOR};
 
 struct Instruction {
-    string name;
-    uint32_t pc;
-    string original;
-    bool flushed = false;
-    bool taken = false;       
-    bool executed = false;    
-    int fetch_cycle = -1;     
-    int decode_cycle = -1;    
-    int execute_cycle = -1;  
-    int mem_cycle = -1;      
-    int wb_cycle = -1;   
-    bool is_bubble = false;
-    
-
-    string dest_reg = "";
-    vector<string> src_regs;
+    string raw;
+    string opcode, rd, rs1, rs2;
 };
 
-vector<Instruction> instructions;
-map<int, string> cycle_notes;  
-int total_cycles = 0;
-int executed_instructions = 0;
-bool ENABLE_FORWARDING = false;   // You can set this to false to check stall behavior
-bool ENABLE_BRANCH_PREDICTION = false; 
-bool ENABLE_REORDERING = false;  // You can set this to false to test reorder off case
+bool isLoad(const Instruction& instr) {
+    return instr.opcode == "lw";
+}
 
-const int CYCLE_TIME_PS = 200;
-const int MAX_CYCLES = 1000;
-const int DISPLAY_CYCLES = 50; 
-map<uint32_t, bool> branch_predictor;
-map<string, int> register_writer; 
+bool hasDependency(const Instruction& a, const Instruction& b) {
+    return (a.rd == b.rs1 || a.rd == b.rs2 || b.rd == a.rs1 || b.rd == a.rs2 || a.rd == b.rd);
+}
 
-string extract_register(const string& instr_text, size_t pos) {
-    size_t reg_start = instr_text.find('$', pos);
-    if (reg_start == string::npos) return "";
-    
-    size_t reg_end_candidates[] = {
-        instr_text.find(',', reg_start),
-        instr_text.find(')', reg_start),
-        instr_text.find(' ', reg_start)
+void stallonoff(vector<Instruction>& instrs, bool forwarding) {
+    auto hasConflict = [](const Instruction& a, const Instruction& b) {
+        return (a.rd == b.rs1 || a.rd == b.rs2 ||
+                b.rd == a.rs1 || b.rd == a.rs2 ||
+                a.rd == b.rd);
     };
-    
-    size_t reg_end = instr_text.length();
-    for (auto val : reg_end_candidates) {
-        if (val != string::npos && val < reg_end) {
-            reg_end = val;
-        }
-    }
-    
-    return instr_text.substr(reg_start, reg_end - reg_start);
-}
 
+    size_t n = instrs.size();
+    for (size_t i = 0; i < n - 1; ++i) {
+        Instruction& current = instrs[i];
+        Instruction& next = instrs[i + 1];
 
-void parse_instruction(Instruction& instr) {
-    size_t first_dollar = instr.original.find('$');
-    if (first_dollar == string::npos) return;
-    
-    if (instr.name == "add" || instr.name == "sub" || instr.name == "and" || 
-        instr.name == "or" || instr.name == "slt" || instr.name == "mul" || 
-        instr.name == "div") {
-        instr.dest_reg = extract_register(instr.original, first_dollar);
-        
-        size_t second_dollar = instr.original.find('$', first_dollar + 1);
-        if (second_dollar != string::npos) {
-            instr.src_regs.push_back(extract_register(instr.original, second_dollar));
-            
-            size_t third_dollar = instr.original.find('$', second_dollar + 1);
-            if (third_dollar != string::npos) {
-                instr.src_regs.push_back(extract_register(instr.original, third_dollar));
-            }
-        }
-    } 
-    else if (instr.name == "lw" || instr.name == "lb" || instr.name == "lh") {
-        instr.dest_reg = extract_register(instr.original, first_dollar);
-        
-        size_t paren_pos = instr.original.find('(');
-        if (paren_pos != string::npos) {
-            size_t rs_pos = instr.original.find('$', paren_pos);
-            if (rs_pos != string::npos) {
-                instr.src_regs.push_back(extract_register(instr.original, rs_pos));
-            }
-        }
-    }
-    else if (instr.name == "sw" || instr.name == "sb" || instr.name == "sh") {
+        bool hazard = (current.rd == next.rs1 || current.rd == next.rs2);
 
-        instr.src_regs.push_back(extract_register(instr.original, first_dollar));
-        
-        size_t paren_pos = instr.original.find('(');
-        if (paren_pos != string::npos) {
-            size_t rs_pos = instr.original.find('$', paren_pos);
-            if (rs_pos != string::npos) {
-                instr.src_regs.push_back(extract_register(instr.original, rs_pos));
-            }
-        }
-    }
-    else if (instr.name == "beq" || instr.name == "bne") {
-        instr.src_regs.push_back(extract_register(instr.original, first_dollar));
-        
-        size_t second_dollar = instr.original.find('$', first_dollar + 1);
-        if (second_dollar != string::npos) {
-            instr.src_regs.push_back(extract_register(instr.original, second_dollar));
-        }
-    }
-    else if (instr.name == "j" || instr.name == "jal") {
-        // no registers
-    }
-    else {
-        size_t pos = first_dollar;
-        for (int i = 0; i < 3 && pos != string::npos; i++) {
-            string reg = extract_register(instr.original, pos);
-            if (i == 0 && instr.name[0] != 'b' && instr.name != "sw" && 
-                instr.name != "sb" && instr.name != "sh") {
-                instr.dest_reg = reg;
-            } else {
-                instr.src_regs.push_back(reg);
-            }
-            pos = instr.original.find('$', pos + 1);
-        }
-    }
-}
+        if (!hazard) continue;
+        if (forwarding && current.opcode != "lw") continue;
+        if (forwarding && current.opcode == "lw" && next.opcode != "lw") continue;
 
-void load_program(const string& filename) {
-    ifstream infile(filename);
-    if (!infile.is_open()) {
-        cerr << CLR_RED << "Error opening file: " << filename << CLR_RESET << endl;
-        exit(EXIT_FAILURE);
-    }
-
-    string line;
-    uint32_t pc = 0;
-    while (getline(infile, line)) {
-        line.erase(0, line.find_first_not_of(" \t"));
-        if (line.find_last_not_of(" \t") != string::npos) {
-            line.erase(line.find_last_not_of(" \t") + 1);
-        }
-        if (line.empty() || line[0] == '#') continue;
-        
-        Instruction instr;
-        instr.pc = pc;
-        instr.original = line;
-        
-        size_t first_space = line.find_first_of(" \t");
-        instr.name = (first_space != string::npos) ? line.substr(0, first_space) : line;
-        transform(instr.name.begin(), instr.name.end(), instr.name.begin(), ::tolower);
-        
-        if (instr.name == "beq" || instr.name == "bne" || 
-            instr.name == "j" || instr.name == "jal") {
-            auto it = branch_predictor.find(pc);
-            if (it != branch_predictor.end()) {
-                instr.taken = it->second;
-            } else {
-                instr.taken = false; 
-                branch_predictor[pc] = false;
-            }
-        }
-        
-        parse_instruction(instr);
-        
-        instructions.push_back(instr);
-        pc += 4;
-    }
-    infile.close();
-}
-
-bool is_load(const string& instr_name) {
-    return instr_name == "lw" || instr_name == "lb" || 
-           instr_name == "lh" || instr_name == "lbu" || instr_name == "lhu";
-}
-
-bool is_branch(const string& instr_name) {
-    return instr_name == "beq" || instr_name == "bne" || 
-           instr_name == "j" || instr_name == "jal";
-}
-
-
-
-
-
-
-bool evaluate_branch(const Instruction& instr) {
-    (void)instr;
-    return true; 
-}
-bool has_data_hazard(int producer_idx, int consumer_idx) {
-    if (producer_idx < 0 || consumer_idx < 0 || 
-        producer_idx >= (int)instructions.size() || 
-        consumer_idx >= (int)instructions.size()) {
-        return false;
-    }
-    
-    const Instruction& producer = instructions[producer_idx];
-    const Instruction& consumer = instructions[consumer_idx];
-    
-    if (producer.dest_reg.empty())
-        return false;
-    
-    for (const auto& src_reg : consumer.src_regs) {
-        if (src_reg == producer.dest_reg) {
-            if (!ENABLE_FORWARDING) {
-                // Stall if consumer instruction is within 3 instructions after producer
-                if (consumer_idx <= producer_idx + 3) {
-                    return true;
-                }
-                return false;
-            }
-            // Forwarding enabled: stall only for load-use hazard with immediate successor
-            if (ENABLE_FORWARDING) {
-                if (is_load(producer.name) && consumer_idx == producer_idx + 1) {
-                    return true;
-                }
-                return false;
-            }
-        }
-    }
-    return false;
-}
-
-void reorder_instructions() {
-    vector<Instruction> reordered;
-    vector<bool> used(instructions.size(), false);
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        if (used[i]) continue;
-
-        const auto& inst = instructions[i];
-
-        // Find independent instructions later than i to reorder before i
-        for (size_t j = i + 1; j < instructions.size(); ++j) {
-            if (used[j]) continue;
-
-            bool independent = true;
-
-            // j writes to register used by i? Dependency
-            for (const string& src : inst.src_regs) {
-                if (instructions[j].dest_reg == src) {
-                    independent = false;
+        for (size_t j = i + 1; j < n; ++j) {
+            bool safe = true;
+            for (size_t k = i + 1; k <= j; ++k) {
+                if (hasConflict(current, instrs[k])) {
+                    safe = false;
                     break;
                 }
             }
-            if (!independent) continue;
-
-            // i writes to register used by j? Dependency
-            for (const string& src : instructions[j].src_regs) {
-                if (inst.dest_reg == src) {
-                    independent = false;
-                    break;
-                }
+            if (safe) {
+                Instruction temp = current;
+                for (size_t k = i; k < j; ++k)
+                    instrs[k] = instrs[k + 1];
+                instrs[j] = temp;
+                break;
             }
-            if (!independent) continue;
-
-            reordered.push_back(instructions[j]);
-            used[j] = true;
         }
-
-        reordered.push_back(inst);
-        used[i] = true;
     }
-
-    instructions = reordered;
 }
 
-void simulate_pipeline() {
-    if (ENABLE_REORDERING) {
-        reorder_instructions();
+class PipelineSimulator {
+private:
+    vector<Instruction> instructions;
+    vector<vector<string>> pipelineTable;
+    vector<int> pipelineStage;
+    vector<bool> started;
+    vector<int> stallUntil;
+    bool forwarding;
+    int totalCycles;
+    int stallCount = 0;
+
+public:
+    PipelineSimulator(const vector<Instruction>& instrs, bool fwd)
+        : instructions(instrs), forwarding(fwd), totalCycles(0) {
+        pipelineTable.resize(instrs.size(), vector<string>(50, "-"));
+        pipelineStage.resize(instrs.size(), -1);
+        started.resize(instrs.size(), false);
+        stallUntil.resize(instrs.size(), 0);
     }
 
-    vector<int> IF(MAX_CYCLES, -1);
-    vector<int> ID(MAX_CYCLES, -1);
-    vector<int> EX(MAX_CYCLES, -1);
-    vector<int> MEM(MAX_CYCLES, -1);
-    vector<int> WB(MAX_CYCLES, -1);
-
-    int next_fetch_idx = 0;
-    total_cycles = 0;
-    executed_instructions = 0;
-    register_writer.clear();
-    cycle_notes.clear();
-
-    bool done = false;
-
-    while (!done && total_cycles < MAX_CYCLES) {
-        // Writeback stage completes at previous cycle WB[cycle-1]
-        if (total_cycles > 0 && WB[total_cycles - 1] != -1) {
-            Instruction &instr = instructions[WB[total_cycles - 1]];
-            instr.wb_cycle = total_cycles - 1;
-            instr.executed = true;
-            executed_instructions++;
-            // Remove register writers that are done writing back
-            for (auto it = register_writer.begin(); it != register_writer.end();) {
-                if (it->second == WB[total_cycles - 1]) {
-                    it = register_writer.erase(it);
+    bool hasHazard(size_t i) {
+        if (i == 0) return false;
+        Instruction curr = instructions[i];
+        for (size_t j = max(0, static_cast<int>(i) - 2); j < i; ++j) {
+            Instruction prev = instructions[j];
+            if (prev.rd == curr.rs1 || prev.rd == curr.rs2) {
+                int prevStage = pipelineStage[j];
+                if (forwarding) {
+                    if (isLoad(prev) && prevStage < 3) return true;
+                    else if (!isLoad(prev) && prevStage < 2) return true;
                 } else {
-                    ++it;
+                    if (prevStage < 4) return true;
                 }
             }
         }
+        return false;
+    }
 
-        // Advance pipeline registers
-        if (total_cycles > 0) {
-            WB[total_cycles] = MEM[total_cycles - 1];
-            MEM[total_cycles] = EX[total_cycles - 1];
-            EX[total_cycles] = ID[total_cycles - 1];
-            ID[total_cycles] = IF[total_cycles - 1];
-        }
+    void simulate() {
+        int maxCycles = 50;
+        for (int cycle = 0; cycle < maxCycles; ++cycle) {
+            vector<bool> stall(instructions.size(), false);
 
-        bool stall = false;
-        bool branch_misprediction = false;
-
-        if (ID[total_cycles] != -1) {
-            int ex_idx = EX[total_cycles];
-            int mem_idx = MEM[total_cycles];
-            int id_idx = ID[total_cycles];
-
-            // Check for hazards with EX and MEM stage instructions
-            if (has_data_hazard(ex_idx, id_idx) || has_data_hazard(mem_idx, id_idx)) {
-                stall = true;
-                cycle_notes[total_cycles] = "STALL (Data Hazard)";
-                
-                // Insert a bubble (NOP) into EX stage
-                EX[total_cycles] = -1; // <- means bubble
-                MEM[total_cycles] = EX[total_cycles - 1];
-                WB[total_cycles] = MEM[total_cycles - 1];
-            
-                // Hold ID and IF
-                ID[total_cycles] = ID[total_cycles - 1];
-                IF[total_cycles] = -1;
-            
-                continue; // Skip rest of this cycle
+            if (!forwarding) {
+                for (size_t i = 0; i < instructions.size(); ++i)
+                    if (pipelineStage[i] == 1 && hasHazard(i)) {
+                        stall[i] = true;
+                        stallUntil[i] = cycle + 2;
+                    }
             }
-            
-        }
 
-        if (EX[total_cycles] != -1 && is_branch(instructions[EX[total_cycles]].name)) {
-            bool actual_taken = evaluate_branch(instructions[EX[total_cycles]]);
-            branch_misprediction = (actual_taken != instructions[EX[total_cycles]].taken);
+            for (size_t i = 0; i < instructions.size(); ++i) {
+                if (pipelineStage[i] == -1 && !started[i]) {
+                    if (i == 0 || (pipelineStage[i - 1] > 1 && pipelineTable[i - 1][cycle - 1] != "ST")) {
+                        pipelineStage[i] = 1;
+                        started[i] = true;
+                        pipelineTable[i][cycle] = STAGES[0];
+                    }
+                } else if (pipelineStage[i] >= 0 && static_cast<size_t>(pipelineStage[i]) < STAGES.size()) {
+                    if ((stall[i] || cycle < stallUntil[i])) {
+                        pipelineTable[i][cycle] = "ST";
+                        stallCount++;
+                    } else {
+                        pipelineTable[i][cycle] = STAGES[pipelineStage[i]];
+                        pipelineStage[i]++;
+                    }
+                }
+            }
 
-            if (branch_misprediction) {
-                IF[total_cycles] = -1;
-                ID[total_cycles] = -1;
-                next_fetch_idx = actual_taken ? EX[total_cycles] + 1 : next_fetch_idx;
-                cycle_notes[total_cycles] = "FLUSH (Branch Misprediction)";
+            for (size_t i = 1; i < instructions.size(); ++i)
+                if (pipelineTable[i - 1][cycle] == "ST" && pipelineTable[i][cycle] != "ST" && pipelineTable[i][cycle] != STAGES[0])
+                    if (pipelineStage[i] >= 0) pipelineTable[i][cycle] = "ST";
+
+            if (all_of(pipelineStage.begin(), pipelineStage.end(), [](int s) { return s >= 5; })) {
+                totalCycles = cycle + 1;
+                break;
             }
         }
-
-        if (!stall && !branch_misprediction && next_fetch_idx < (int)instructions.size()) {
-            IF[total_cycles] = next_fetch_idx;
-            instructions[next_fetch_idx].fetch_cycle = total_cycles;
-            next_fetch_idx++;
-        }
-
-        if (ID[total_cycles] != -1)
-            instructions[ID[total_cycles]].decode_cycle = total_cycles;
-        if (EX[total_cycles] != -1) {
-            instructions[EX[total_cycles]].execute_cycle = total_cycles;
-            if (!instructions[EX[total_cycles]].dest_reg.empty()) {
-                register_writer[instructions[EX[total_cycles]].dest_reg] = EX[total_cycles];
-            }
-        }
-        if (MEM[total_cycles] != -1) {
-            instructions[MEM[total_cycles]].mem_cycle = total_cycles;
-        }
-
-        if (static_cast<size_t>(executed_instructions) == instructions.size()) {
-            done = true;
-        }
-
-        total_cycles++;
+        printResults();
     }
-}
 
+    void printResults() {
+        cout << "\n\n⋅°₊ • ୨୧ ‧₊° ⋅˖ ݁𖥔 ݁˖   𐙚   ˖ ݁𖥔 ݁˖ ⋅°₊ • ୨୧ ‧₊° ⋅  \n˚₊‧ 𐙚 ‧₊˚ ⋅🎀⋅˚₊‧ 𐙚 ‧₊˚ ⋅ PIPELINE TIMELINE ⋅˚₊‧ 𐙚 ‧₊˚ ⋅🎀⋅˚₊‧ 𐙚 ‧₊˚ ⋅\n⋅°₊ • ୨୧ ‧₊° ⋅˖ ݁𖥔 ݁˖   𐙚   ˖ ݁𖥔 ݁˖ ⋅°₊ • ୨୧ ‧₊° ⋅ \n\n";
 
-void display_pipeline_chart() {
-    int display_cycles = min(total_cycles, DISPLAY_CYCLES);
-    total_cycles = total_cycles-1;
-    cout << "\n" << CLR_BOLD << CLR_CYAN << "MIPS Pipeline Simulation" << CLR_RESET << "\n";
-    cout << "Instructions: " << instructions.size() << " | Cycles: " << total_cycles;
-    if (total_cycles > DISPLAY_CYCLES) {
-        cout << " (showing first " << DISPLAY_CYCLES << ")";
-    }
-    cout << "\n\n";
-    
-    cout << setw(20) << left << "Instruction";
-    for (int c = 0; c < display_cycles; ++c) {
-        cout << setw(4) << c;
-    }
-    cout << "\n" << string(20 + 4 * display_cycles, '-') << "\n";
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        cout << setw(20) << left << instructions[i].original.substr(0, 18);
-        
-        for (int c = 0; c < display_cycles; ++c) {
-            string stage = "";
-            
-            if (c == instructions[i].fetch_cycle) stage = "IF";
-            else if (c == instructions[i].decode_cycle) stage = "ID";
-            else if (c == instructions[i].execute_cycle) stage = "EX";
-            else if (c == instructions[i].mem_cycle) stage = "MEM";
-            else if (c == instructions[i].wb_cycle) stage = "WB";
-            
-            if (stage == "IF") cout << CLR_BLUE << setw(4) << "IF" << CLR_RESET;
-            else if (stage == "ID") cout << CLR_YELLOW << setw(4) << "ID" << CLR_RESET;
-            else if (stage == "EX") cout << CLR_MAGENTA << setw(4) << "EX" << CLR_RESET;
-            else if (stage == "MEM") cout << CLR_CYAN << setw(4) << "MEM" << CLR_RESET;
-            else if (stage == "WB") cout << CLR_GREEN << setw(4) << "WB" << CLR_RESET;
-            else cout << setw(4) << " ";
-        }
+        cout << "+------------------------------+";
+        for (int i = 0; i < totalCycles; ++i) cout << "------+";
+        cout << "\n|" << setw(29) << "Instruction" << " |";
+        for (int i = 0; i < totalCycles; ++i) cout << " C" << i + 1 << " |";
+        cout << "\n+------------------------------+";
+        for (int i = 0; i < totalCycles; ++i) cout << "------+";
         cout << "\n";
-    }
-    
-    cout << setw(20) << left << "EVENTS";
-    for (int c = 0; c < display_cycles; ++c) {
-        if (cycle_notes.find(c) != cycle_notes.end()) {
-            cout << CLR_RED << setw(4) << "!" << CLR_RESET;
-        } else {
-            cout << setw(4) << " ";
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            cout << "|" << setw(29) << instructions[i].raw  << " |";
+            for (int j = 0; j < totalCycles; ++j) {
+                string val = pipelineTable[i][j];
+                if (val == "ST") cout << ST_COLOR << setw(6) << "ST" << RESET << "|";
+                else if (val == "-") cout << setw(6) << " " << "|";
+                else {
+                    size_t idx = find(STAGES.begin(), STAGES.end(), val) - STAGES.begin();
+                    cout << STAGE_COLORS[idx] << setw(6) << val << RESET << "|";
+                }
+            }
+            cout << "\n+------------------------------+";
+            for (int j = 0; j < totalCycles; ++j) cout << "------+";
+            cout << "\n";
         }
+
+        double throughput = static_cast<double>(instructions.size()) / totalCycles;
+        double speedup = static_cast<double>(instructions.size() * STAGES.size()) / totalCycles;
+
+        cout << "\n｡･ﾟﾟ･\t୨୧\t･ﾟﾟ･｡\n⋆｡˚ ❀  STATISTICS  ❀ ˚｡⋆\n｡･ﾟﾟ･\t୨୧\t･ﾟﾟ･｡\n\n";
+        cout << "୨୧ Total stalls     : " << ST_COLOR << stallCount << RESET << "\n";
+        cout << "୨୧ Total cycles     : " << totalCycles << "\n";
+        cout << "୨୧ Total time       : " << 200 * totalCycles << " ps\n";
+        cout << "୨୧ Instructions     : " << instructions.size() << "\n";
+        cout << "୨୧ Throughput       : " << fixed << setprecision(2) << throughput << " instr/cycle\n";
+        cout << "୨୧ Speedup          : " << fixed << setprecision(2) << speedup << "x\n\n";
     }
-    cout << "\n\n";
-    cout << "\n" << CLR_BOLD << "Statistics:" << CLR_RESET << "\n";
-    cout << "Total Cycles: " << total_cycles << "\n";
-    cout << "Executed Instructions: " << executed_instructions << "\n";
-    cout << "CPI: " << fixed << setprecision(2) 
-         << (double)total_cycles / executed_instructions << "\n";
-    cout << "Throughput (instr/cycle): " << fixed << setprecision(3) 
-         << (double)executed_instructions / total_cycles << "\n";
-    cout << "Total Time (ps): " << total_cycles * 200 << "\n";
-    cout << "\n" << CLR_BOLD << "Pipeline Events:" << CLR_RESET << "\n";
-    for (const auto& note : cycle_notes) {
-        cout << "Cycle " << note.first << ": " << note.second << "\n";
-    }
-}
+};
 
-void export_to_excel() {
-    lxw_workbook *workbook = workbook_new("pipeline_report.xlsx");
-    if (!workbook) {
-        cerr << CLR_RED << "Failed to create Excel workbook!" << CLR_RESET << endl;
-        return;
-    }
-
-    lxw_worksheet *worksheet = workbook_add_worksheet(workbook, "Pipeline");
-    if (!worksheet) {
-        cerr << CLR_RED << "Failed to create worksheet!" << CLR_RESET << endl;
-        workbook_close(workbook);
-        return;
-    }
-
-    lxw_format *header_format = workbook_add_format(workbook);
-    format_set_bold(header_format);
-    format_set_bg_color(header_format, LXW_COLOR_GRAY);
-    lxw_format *if_format = workbook_add_format(workbook);
-    format_set_bg_color(if_format, LXW_COLOR_BLUE);
-    format_set_font_color(if_format, LXW_COLOR_WHITE);
-    lxw_format *id_format = workbook_add_format(workbook);
-    format_set_bg_color(id_format, LXW_COLOR_YELLOW);
-    lxw_format *ex_format = workbook_add_format(workbook);
-    format_set_bg_color(ex_format, LXW_COLOR_MAGENTA);
-    format_set_font_color(ex_format, LXW_COLOR_WHITE);
-    lxw_format *mem_format = workbook_add_format(workbook);
-    format_set_bg_color(mem_format, LXW_COLOR_CYAN);
-    lxw_format *wb_format = workbook_add_format(workbook);
-    format_set_bg_color(wb_format, LXW_COLOR_GREEN);
-
-    lxw_format *event_format = workbook_add_format(workbook);
-    format_set_bg_color(event_format, LXW_COLOR_RED);
-    format_set_font_color(event_format, LXW_COLOR_WHITE);
-
-    int export_cycles = total_cycles;
-
-    worksheet_write_string(worksheet, 0, 0, "Instruction", header_format);
-    for (int c = 0; c < export_cycles; ++c) {
-        worksheet_write_string(worksheet, 0, c + 1, ("C" + to_string(c)).c_str(), header_format);
-    }
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        worksheet_write_string(worksheet, i + 1, 0, instructions[i].original.c_str(), NULL);
-
-        for (int c = 0; c < export_cycles; ++c) {
-            lxw_format *cell_format = NULL;
-            const char* stage = "";
-
-            if (c == instructions[i].fetch_cycle) {
-                stage = "IF";
-                cell_format = if_format;
-            }
-            else if (c == instructions[i].decode_cycle) {
-                stage = "ID";
-                cell_format = id_format;
-            }
-            else if (c == instructions[i].execute_cycle) {
-                stage = "EX";
-                cell_format = ex_format;
-            }
-            else if (c == instructions[i].mem_cycle) {
-                stage = "MEM";
-                cell_format = mem_format;
-            }
-            else if (c == instructions[i].wb_cycle) {
-                stage = "WB";
-                cell_format = wb_format;
-            }
-
-            if (cell_format) {
-                worksheet_write_string(worksheet, i + 1, c + 1, stage, cell_format);
-            }
-        }
-    }
-
-    int events_row = instructions.size() + 1;
-    worksheet_write_string(worksheet, events_row, 0, "EVENTS", NULL);
-
-    for (int c = 0; c < export_cycles; ++c) {
-        if (cycle_notes.find(c) != cycle_notes.end()) {
-            worksheet_write_string(worksheet, events_row, c + 1, "!", event_format);
-        }
-    }
-
-    int stats_row = instructions.size() + 3;
-    worksheet_write_string(worksheet, stats_row, 0, "Total Cycles", NULL);
-    worksheet_write_number(worksheet, stats_row, 1, export_cycles, NULL);
-    worksheet_write_string(worksheet, stats_row + 1, 0, "Executed Instructions", NULL);
-    worksheet_write_number(worksheet, stats_row + 1, 1, executed_instructions, NULL);
-    worksheet_write_string(worksheet, stats_row + 2, 0, "CPI", NULL);
-    worksheet_write_number(worksheet, stats_row + 2, 1, (double)export_cycles / executed_instructions, NULL);
-    worksheet_write_string(worksheet, stats_row + 3, 0, "Throughput (instr/cycle)", NULL);
-    worksheet_write_number(worksheet, stats_row + 3, 1, (double)executed_instructions / export_cycles, NULL);
-    worksheet_write_string(worksheet, stats_row + 4, 0, "Total Time (ps)", NULL);
-    worksheet_write_number(worksheet, stats_row + 4, 1, export_cycles * CYCLE_TIME_PS, NULL);
-
-    workbook_close(workbook);
+Instruction parseInstruction(const string& line) {
+    string temp = line;
+    replace(temp.begin(), temp.end(), ',', ' ');
+    replace(temp.begin(), temp.end(), '(', ' ');
+    replace(temp.begin(), temp.end(), ')', ' ');
+    stringstream ss(temp);
+    Instruction instr;
+    instr.raw = line;
+    ss >> instr.opcode >> instr.rd >> instr.rs1 >> instr.rs2;
+    return instr;
 }
 
 int main() {
-    cout << "\n\n" << CLR_BOLD << "MIPS 5-Stage Pipeline Simulator" << CLR_RESET << "\n";
-    cout << "Branch Prediction: " << (ENABLE_BRANCH_PREDICTION ? "ON" : "OFF") << "\n";
-    cout << "Forwarding: " << (ENABLE_FORWARDING ? "ON" : "OFF") << "\n";
-    cout << "Reordering: " << (ENABLE_REORDERING ? "ON" : "OFF") << "\n\n";
-
-    try {
-        load_program("test.asm");
-        simulate_pipeline();
-        display_pipeline_chart();
-        export_to_excel();
-        cout << CLR_GREEN << "\nSimulation completed successfully!" << CLR_RESET << endl;
-        cout << "Excel report saved to pipeline_report.xlsx" << endl << endl << endl;
-        return 0;
-
-    } 
-    catch (const exception& e) {
-        cerr << CLR_RED << "Error: " << e.what() << CLR_RESET << endl;
+    ifstream infile("test.asm");
+    if (!infile) {
+        cerr << "❌ Error: Could not open test.asm\n";
         return 1;
     }
 
+    vector<Instruction> instructions;
+    string line;
+    while (getline(infile, line)) {
+        if (!line.empty())
+            instructions.push_back(parseInstruction(line));
+    }
+    infile.close();
+
+    cout << "୨୧ Forward?: ";
+    string fwdInput;
+    cin >> fwdInput;
+    bool forwarding = (fwdInput == "1" || fwdInput == "yes");
+
+    cout << "୨୧ Reorder?: ";
+    string reorderInput;
+    cin >> reorderInput;
+    bool reordering = (reorderInput == "1" || reorderInput == "yes");
+
+    if (reordering)
+        stallonoff(instructions, forwarding);
+
+    PipelineSimulator sim(instructions, forwarding);
+    sim.simulate();
+    return 0;
 }
