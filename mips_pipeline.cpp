@@ -156,7 +156,7 @@ public:
         cout << "+------------------------------+";
         for (int i = 0; i < totalCycles; ++i) cout << "------+";
         cout << "\n|" << setw(29) << "Instruction" << " |";
-        for (int i = 0; i < totalCycles; ++i) cout << " C" << i + 1 << " |";
+        for (int i = 0; i < totalCycles; ++i) cout << " C " << setw(2)<<i + 1 << " |";
         cout << "\n+------------------------------+";
         for (int i = 0; i < totalCycles; ++i) cout << "------+";
         cout << "\n";
