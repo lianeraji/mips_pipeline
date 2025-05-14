@@ -169,7 +169,7 @@ public:
         }
         out.close();
 
-        // Pretty print to terminal
+     
         cout << "\n+------------------------------+";
         for (int i = 0; i < totalCycles; ++i) cout << "------+";
         cout << "\n|" << setw(29) << "Instruction" << " |";
