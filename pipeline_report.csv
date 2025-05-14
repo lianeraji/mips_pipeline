@@ -1,6 +1,0 @@
-Instruction,Cycle 1,Cycle 2,Cycle 3,Cycle 4,Cycle 5,Cycle 6,Cycle 7,Cycle 8,Cycle 9
-"add r3, r1, r2;",IF,RR,EX,MA,WR,,,,
-"add r2, r4, r3;",,IF,RR,EX,MA,WR,,,
-"add r1, r3, r1",,,IF,RR,EX,MA,WR,,
-"nand r6, r4, r5;",,,,IF,RR,EX,MA,WR,
-"add r4, r2, r5;",,,,,IF,RR,EX,MA,WR

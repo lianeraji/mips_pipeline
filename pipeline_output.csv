@@ -1,0 +1,6 @@
+"Instruction","C1","C2","C3","C4","C5","C6","C7","C8","C9"
+"add r3, r1, r2;","IF","RR","EX","MA","WR","","","",""
+"add r2, r4, r3;","","IF","RR","EX","MA","WR","","",""
+"add r1, r3, r1","","","IF","RR","EX","MA","WR","",""
+"nand r6, r4, r5;","","","","IF","RR","EX","MA","WR",""
+"add r4, r2, r5;","","","","","IF","RR","EX","MA","WR"

@@ -28,10 +28,6 @@ bool isLoad(const Instruction& instr) {
     return instr.opcode == "lw";
 }
 
-bool hasDependency(const Instruction& a, const Instruction& b) {
-    return (a.rd == b.rs1 || a.rd == b.rs2 || b.rd == a.rs1 || b.rd == a.rs2 || a.rd == b.rd);
-}
-
 void stallonoff(vector<Instruction>& instrs, bool forwarding) {
     auto hasConflict = [](const Instruction& a, const Instruction& b) {
         return (a.rd == b.rs1 || a.rd == b.rs2 ||
@@ -151,63 +147,64 @@ public:
     }
 
     void printResults() {
-    ofstream out("pipeline_output.csv");
-    if (!out) {
-        cerr << "❌ Error: Could not write CSV file.\n";
-        return;
-    }
-
-    cout << "\n\n⋅°₊ • ୨୧ ‧₊° ⋅˖ ݁𖥔 ݁˖   𐙚   ˖ ݁𖥔 ݁˖ ⋅°₊ • ୨୧ ‧₊° ⋅  \n˚₊‧ 𐙚 ‧₊˚ ⋅🎀⋅˚₊‧ 𐙚 ‧₊˚ ⋅ PIPELINE TIMELINE ⋅˚₊‧ 𐙚 ‧₊˚ ⋅🎀⋅˚₊‧ 𐙚 ‧₊˚ ⋅\n⋅°₊ • ୨୧ ‧₊° ⋅˖ ݁𖥔 ݁˖   𐙚   ˖ ݁𖥔 ݁˖ ⋅°₊ • ୨୧ ‧₊° ⋅ \n\n";
-
-    cout << "+------------------------------+";
-    out << "Instruction";
-    for (int i = 0; i < totalCycles; ++i) {
-        cout << "------+";
-        out << ",C" << (i + 1);
-    }
-    out << "\n";
-    cout << "\n|" << setw(29) << "Instruction" << " |";
-    for (int i = 0; i < totalCycles; ++i)
-        cout << " C " << setw(2) << i + 1 << " |";
-    cout << "\n+------------------------------+";
-    for (int i = 0; i < totalCycles; ++i) cout << "------+";
-    cout << "\n";
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        cout << "|" << setw(29) << instructions[i].raw << " |";
-        out << "\"" << instructions[i].raw << "\"";
-        for (int j = 0; j < totalCycles; ++j) {
-            string val = pipelineTable[i][j];
-            out << "," << val;
-
-            if (val == "ST") cout << ST_COLOR << setw(6) << "ST" << RESET << "|";
-            else if (val == "-") cout << setw(6) << " " << "|";
-            else {
-                size_t idx = find(STAGES.begin(), STAGES.end(), val) - STAGES.begin();
-                cout << STAGE_COLORS[idx] << setw(6) << val << RESET << "|";
-            }
+        ofstream out("pipeline_output.csv");
+        if (!out) {
+            cerr << "\n❌ Error: Could not write CSV file.\n";
+            return;
         }
-        cout << "\n+------------------------------+";
-        for (int j = 0; j < totalCycles; ++j) cout << "------+";
-        cout << "\n";
+
+        out << "\"Instruction\"";
+        for (int i = 0; i < totalCycles; ++i)
+            out << ",\"C" << (i + 1) << "\"";
         out << "\n";
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            out << "\"" << instructions[i].raw << "\"";
+            for (int j = 0; j < totalCycles; ++j) {
+                string val = pipelineTable[i][j];
+                string rawVal = (val == "-" ? "" : val);
+                out << ",\"" << rawVal << "\"";
+            }
+            out << "\n";
+        }
+        out.close();
+
+        // Pretty print to terminal
+        cout << "\n+------------------------------+";
+        for (int i = 0; i < totalCycles; ++i) cout << "------+";
+        cout << "\n|" << setw(29) << "Instruction" << " |";
+        for (int i = 0; i < totalCycles; ++i) cout << " C " << setw(2) << i + 1 << " |";
+        cout << "\n+------------------------------+";
+        for (int i = 0; i < totalCycles; ++i) cout << "------+";
+        cout << "\n";
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            cout << "|" << setw(29) << instructions[i].raw << " |";
+            for (int j = 0; j < totalCycles; ++j) {
+                string val = pipelineTable[i][j];
+                if (val == "ST") cout << ST_COLOR << setw(6) << "ST" << RESET << "|";
+                else if (val == "-") cout << setw(6) << " " << "|";
+                else {
+                    size_t idx = find(STAGES.begin(), STAGES.end(), val) - STAGES.begin();
+                    cout << STAGE_COLORS[idx] << setw(6) << val << RESET << "|";
+                }
+            }
+            cout << "\n+------------------------------+";
+            for (int j = 0; j < totalCycles; ++j) cout << "------+";
+            cout << "\n";
+        }
+
+        double throughput = static_cast<double>(instructions.size()) / totalCycles;
+        double speedup = static_cast<double>(instructions.size() * STAGES.size()) / totalCycles;
+        cout << "\n୨୧ CSV File made";
+        cout << "\n୨୧ Total stalls     : " << ST_COLOR << stallCount << RESET;
+        cout << "\n୨୧ Total cycles     : " << totalCycles;
+        cout << "\n୨୧ Total time       : " << 200 * totalCycles << " ps";
+        cout << "\n୨୧ Instructions     : " << instructions.size();
+        cout << "\n୨୧ Throughput       : " << fixed << setprecision(2) << throughput << " instr/cycle";
+        cout << "\n୨୧ Speedup          : " << fixed << setprecision(2) << speedup << "x\n";
     }
-
-    double throughput = static_cast<double>(instructions.size()) / totalCycles;
-    double speedup = static_cast<double>(instructions.size() * STAGES.size()) / totalCycles;
-
-    cout << "\n｡･ﾟﾟ･\t୨୧\t･ﾟﾟ･｡\n⋆｡˚ ❀  STATISTICS  ❀ ˚｡⋆\n｡･ﾟﾟ･\t୨୧\t･ﾟﾟ･｡\n\n";
-    cout << "୨୧ Total stalls     : " << ST_COLOR << stallCount << RESET << "\n";
-    cout << "୨୧ Total cycles     : " << totalCycles << "\n";
-    cout << "୨୧ Total time       : " << 200 * totalCycles << " ps\n";
-    cout << "୨୧ Instructions     : " << instructions.size() << "\n";
-    cout << "୨୧ Throughput       : " << fixed << setprecision(2) << throughput << " instr/cycle\n";
-    cout << "୨୧ Speedup          : " << fixed << setprecision(2) << speedup << "x\n\n";
-
-    out.close();
-    cout << "\n📁 CSV exported to 'pipeline_output.csv'\n";
-}
-
+};
 
 Instruction parseInstruction(const string& line) {
     string temp = line;
